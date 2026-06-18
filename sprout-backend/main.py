@@ -5,11 +5,13 @@ from services.pet_service import (get_pet,update_pet)
 from services.world_service import (get_world,update_world)
 from services.memory_service import (save_memory,get_memories)
 from services.diary_service import (add_action,get_actions)
-from services.gemini_service import (generate_diary,generate_future_message)
+from services.gemini_service import (generate_diary)
 from schemas.user_schema import (UserCreate,UserLogin)
 from auth.auth import (hash_password,verify_password,create_access_token)
 from services.user_service import (create_user,get_user_by_email)
 from services.action_service import (save_action,get_user_actions,get_user_actions_by_days)
+from services.streak_service import (update_streak,get_streak)
+from services.impact_service import calculate_impact
 from auth.auth import get_current_user
 from fastapi import Depends
 
@@ -50,15 +52,6 @@ def memories():
         get_memories()
     }
 
-@app.get("/future")
-def future():
-    world_state = get_world()
-    goals = get_memories()
-    future_message = generate_future_message(world_state,goals)
-    return {
-        "message": future_message
-    }
-
 @app.get("/history")
 def history(user_email: str = Depends(get_current_user)):
     actions = get_user_actions(user_email)
@@ -84,6 +77,16 @@ def history_by_days(days: int,user_email: str = Depends(get_current_user)):
             for action, timestamp in actions
         ]
     }
+
+@app.get("/streak")
+def streak(user_email: str = Depends(get_current_user)):
+    return get_streak(user_email)
+
+@app.get("/impact")
+def impact(user_email: str = Depends(get_current_user)):
+    actions = get_user_actions(user_email)
+    print(actions[:5])
+    return calculate_impact(actions)
 
 @app.post("/signup")
 def signup(user: UserCreate):
@@ -127,11 +130,11 @@ def add_memory(text: str):
 
 @app.post("/action/{action}")
 def perform_action( action: str, user_email: str = Depends(get_current_user)):
-    print("CURRENT USER:", user_email)
     pet_data = update_pet(action)
     world_data = update_world(action)
     add_action(action)
     save_action(user_email,action)
+    update_streak(user_email)
     pet_level = pet_data["level"]
 
     if action == "public_transport":

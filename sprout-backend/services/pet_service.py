@@ -36,10 +36,10 @@ def update_pet(action):
     pet["energy"] = max(0, pet["energy"])
     pet["happiness"] = max(0, pet["happiness"])
 
-    if pet["energy"] >= 300:
+    if pet["energy"] >= 200:
         pet["level"] = 4
 
-    elif pet["energy"] >= 200:
+    elif pet["energy"] >= 150:
         pet["level"] = 3
 
     elif pet["energy"] >= 120:
