@@ -345,8 +345,6 @@ export default function Home() {
 
   const streak = computeStreakFromHistory(activeDayKeys);
 
-// Fetches the latest companion and ecosystem state from the backend.
-// Called on initial dashboard load and after user actions to keep the UI synchronized.
   const loadPet = async () => {
     try {
       const petRes = await API.get("/pet");
@@ -358,8 +356,6 @@ export default function Home() {
     }
   };
 
-// Generates a fresh AI-powered sustainability diary entry based on
-// the user's recent actions and environmental progress.
   const loadDiary = async () => {
     setIsDiaryLoading(true);
     try {
@@ -400,10 +396,7 @@ export default function Home() {
   const climateChampion =
     totalGoals > 0 &&
     completedCount === totalGoals;
-
-// Maps logged eco-actions to user-defined climate goals using keyword matching.
-// This allows sustainability goals to be automatically completed when
-// the user performs a relevant environmental action.
+  
   const checkGoalCompletion = (action: string) => {
     const matchingGoalIndices: number[] = [];
 
@@ -630,10 +623,6 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [showStreakModal, showHistory, showAchievementsModal, showImpactModal, showGoalsModal]);
 
-// Core sustainability interaction handler.
-// Logs an eco-friendly action, updates companion growth,
-// refreshes ecosystem metrics, evaluates achievements,
-// recalculates impact data, and triggers companion feedback.
   const performAction = async (action: string) => {
     setIsActionLoading(action);
 
@@ -676,9 +665,6 @@ export default function Home() {
     }
   };
 
-// Loads authenticated user activity history for a selected time range.
-// History acts as the single source of truth for streaks,
-// achievements, and carbon impact calculations.
   const loadHistory = async (days: number) => {
     setHistoryLoading(true);
 
@@ -704,9 +690,6 @@ export default function Home() {
     }
   };
 
-// Saves a new climate goal and refreshes the goals list.
-// Goals are later matched against sustainability actions
-// to automatically track user progress.
   const saveMemory = async () => {
     if (!memory.trim()) return;
     setIsGoalsLoading(true);
@@ -723,7 +706,6 @@ export default function Home() {
     }
   };
 
-// Returns the companion's visual evolution stage based on level progression.
   const getPetEmoji = () => {
     if (!pet) return "🌱";
     if (pet.level >= 4) return "🌳";
@@ -732,7 +714,6 @@ export default function Home() {
     return "🌱";
   };
 
-// Converts evolution level into a user-facing companion title.
   const getPetTitle = () => {
     if (!pet) return "Seedling Explorer";
     if (pet.level >= 4) return "Ancient Climate Guardian";
@@ -787,9 +768,7 @@ export default function Home() {
   };
 
 
-// Achievement system rewarding sustainable behavior.
-// Progress is calculated dynamically from user actions,
-// streaks, carbon savings, companion evolution, and goal completion.
+  // Dynamic calculations for the game-inspired sustainability achievements card
   const achievements = [
     {
     id: "first_step",
@@ -1152,9 +1131,7 @@ export default function Home() {
 
   
 
-// Presentation layer mapping backend action identifiers
-// to human-readable labels and visual indicators.
-const actionIconMap = {
+  // Friendly icon + label for each logged action, reused by the History popup.
   const actionIconMap: Record<string, { icon: string; label: string }> = {
     walk_cycle: { icon: "🚶", label: "Walk/Cycle" },
     public_transport: { icon: "🚌", label: "Public Transport" },
