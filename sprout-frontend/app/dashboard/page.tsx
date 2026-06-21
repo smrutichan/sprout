@@ -96,6 +96,59 @@ interface Streak {
   longest_streak: number;
 }
 
+// Evolution Milestones — static stage definitions used to render the
+// horizontal evolution journey timeline. Each stage maps 1:1 to a pet level.
+const EVOLUTION_STAGES = [
+  {
+    level: 1,
+    emoji: "🌱",
+    title: "Sprout Initiator",
+    gradient: "from-emerald-400/20 to-emerald-500/10",
+    border: "border-emerald-500/30 dark:border-emerald-500/20",
+    text: "text-emerald-500",
+    solidBadge: "bg-emerald-500",
+    label: "text-emerald-600 dark:text-emerald-400",
+    glow: "shadow-emerald-500/20",
+    ring: "ring-emerald-400/50",
+  },
+  {
+    level: 2,
+    emoji: "🌿",
+    title: "Canopy Protector",
+    gradient: "from-teal-400/20 to-teal-500/10",
+    border: "border-teal-500/30 dark:border-teal-500/20",
+    text: "text-teal-500",
+    solidBadge: "bg-teal-500",
+    label: "text-teal-600 dark:text-teal-400",
+    glow: "shadow-teal-500/20",
+    ring: "ring-teal-400/50",
+  },
+  {
+    level: 3,
+    emoji: "🪴",
+    title: "Habitat Weaver",
+    gradient: "from-amber-400/20 to-amber-500/10",
+    border: "border-amber-500/30 dark:border-amber-500/20",
+    text: "text-amber-500",
+    solidBadge: "bg-amber-500",
+    label: "text-amber-600 dark:text-amber-400",
+    glow: "shadow-amber-500/20",
+    ring: "ring-amber-400/50",
+  },
+  {
+    level: 4,
+    emoji: "🌳",
+    title: "Planet Guardian",
+    gradient: "from-violet-400/20 to-violet-500/10",
+    border: "border-violet-500/30 dark:border-violet-500/20",
+    text: "text-violet-500",
+    solidBadge: "bg-violet-500",
+    label: "text-violet-600 dark:text-violet-400",
+    glow: "shadow-violet-500/20",
+    ring: "ring-violet-400/50",
+  },
+];
+
 export default function Home() {
   const [pet, setPet] = useState<Pet | null>(null);
   const [world, setWorld] = useState<World | null>(null);
@@ -111,13 +164,17 @@ export default function Home() {
   const [isGoalsLoading, setIsGoalsLoading] = useState(false);
   const [goalSuccess, setGoalSuccess] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [historyDays, setHistoryDays] = useState(7);
+  // NOTE: the initial history load on mount fetches a 30-day window
+  // (see `loadHistory(30)` below). This default must match that window,
+  // otherwise the very first call that re-fetches history using this state
+  // (e.g. after logging an action) silently shrinks the dataset from 30
+  // days down to 7 — which is exactly the kind of stale-state mismatch
+  // that caused the streak figures to drift from the rest of the
+  // dashboard's progress data.
+  const [historyDays, setHistoryDays] = useState(30);
   const [historyActions, setHistoryActions] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  // Streak feature state
-  const [streak, setStreak] = useState<Streak | null>(null);
-  const [streakLoading, setStreakLoading] = useState(false);
   const [showStreakModal, setShowStreakModal] = useState(false);
   const [comingSoonLabel, setComingSoonLabel] = useState<string | null>(null);
   const [showAchievementsModal, setShowAchievementsModal] = useState(false);
@@ -132,8 +189,15 @@ export default function Home() {
   //Celebration popup
   const [showLevelUp, setShowLevelUp] = useState(false);
   const [newLevel, setNewLevel] = useState<number | null>(null);
+  // Achievement popup — queue-based so simultaneous unlocks display one after
+  // another without any being silently dropped. `achievementQueue` holds every
+  // achievement waiting to be shown; `currentAchievement` is the one actively
+  // displayed; `shownAchievements` guards against re-showing the same badge.
+  const [achievementQueue, setAchievementQueue] = useState<any[]>([]);
+  const [currentAchievement, setCurrentAchievement] = useState<any>(null);
   const [showAchievementPopup, setShowAchievementPopup] = useState(false);
-  const [newAchievement, setNewAchievement] = useState<any>(null);
+  // Keep newAchievement as an alias so any other references in the file still compile.
+  const newAchievement = currentAchievement;
   const [shownAchievements, setShownAchievements] = useState<string[]>([]);
 
   // --- Carbon Impact: derived from the same historyActions data the
@@ -212,6 +276,74 @@ export default function Home() {
   });
   const weeklyImpactTotal =
     Math.round(weeklyImpactBreakdown.reduce((sum, d) => sum + d.kg, 0) * 10) / 10;
+
+  // --- Streak: single source of truth, derived from the SAME
+  // historyActions array (and the same local day-boundary / startOfToday
+  // reference) used to power Carbon Impact above. This used to be fetched
+  // from a separate `/streak` endpoint with its own independent refresh
+  // timing — exactly the kind of duplicate state that let the navbar
+  // streak drift out of sync with the rest of the dashboard's progress
+  // data. Computing it client-side here means streak and Carbon Impact can
+  // never disagree about what "happened": they read the same data, kept
+  // fresh by the same loadHistory() calls (on mount, after every logged
+  // action, and whenever the history window is refreshed).
+  const getLocalDayKey = (date: Date) =>
+    `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+
+  // activeDayKeys is THE canonical answer to "did the user log at least one
+  // eco action on this calendar day" — grouped using the exact same local
+  // Year/Month/Date components that Weekly Carbon Impact's day-by-day
+  // breakdown (weeklyImpactBreakdown, above) uses to bucket historyActions.
+  // Every streak-related UI element (current streak, longest streak,
+  // milestone progress, AND the 7-day streak calendar) is derived from this
+  // single Set, so none of them can ever disagree with each other — or with
+  // Weekly Carbon Impact — about which specific days were active.
+  const activeDayKeys = new Set(
+    historyActions.map((a: any) => getLocalDayKey(new Date(a.timestamp)))
+  );
+
+  const computeStreakFromHistory = (activeDays: Set<string>): Streak => {
+    // Current streak: walk backward from today, counting consecutive
+    // active days. If no action has been logged yet today, the streak
+    // isn't broken until the day actually ends, so counting starts from
+    // yesterday in that case instead of zeroing out the streak the instant
+    // the clock rolls over to a new day.
+    let current = 0;
+    const cursor = new Date(startOfToday);
+    if (!activeDays.has(getLocalDayKey(cursor))) {
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    while (activeDays.has(getLocalDayKey(cursor))) {
+      current += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
+    // Longest streak: the longest run of consecutive active days anywhere
+    // within the fetched history window.
+    const oneDay = 86400000;
+    const sortedTimes = [...activeDays]
+      .map((key) => {
+        const [y, m, d] = key.split("-").map(Number);
+        return new Date(y, m, d).getTime();
+      })
+      .sort((a, b) => a - b);
+
+    let longest = 0;
+    let run = 0;
+    let prevTime: number | null = null;
+    for (const t of sortedTimes) {
+      run = prevTime !== null && t - prevTime === oneDay ? run + 1 : 1;
+      longest = Math.max(longest, run);
+      prevTime = t;
+    }
+
+    return {
+      current_streak: current,
+      longest_streak: Math.max(longest, current),
+    };
+  };
+
+  const streak = computeStreakFromHistory(activeDayKeys);
 
   const loadPet = async () => {
     try {
@@ -426,22 +558,15 @@ export default function Home() {
     ]);
   };
 
-  const loadStreak = async () => {
-    setStreakLoading(true);
-    try {
-      const token = localStorage.getItem("token");
-      const res = await API.get("/streak", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      setStreak(res.data);
-    } catch (error) {
-      console.error("Failed to load streak", error);
-    } finally {
-      setStreakLoading(false);
-    }
-  };
+  // NOTE: streak data used to be fetched from a separate `/streak` endpoint
+  // here via its own loadStreak() call. That gave the app two independent
+  // sources of "progress" truth — historyActions (driving Carbon Impact)
+  // and a separately-fetched streak record — which could trivially drift
+  // out of sync (different refresh timing, different day-boundary/timezone
+  // logic server-side, etc). Streak is now derived directly from
+  // historyActions (see computeStreakFromHistory, defined alongside the
+  // Carbon Impact calculation below) so there is exactly one source of
+  // truth for both.
 
   // Action-specific companion popup copy (replaces the old Live Companion Feed card)
   const companionPopupMessages: Record<string, string> = {
@@ -466,10 +591,18 @@ export default function Home() {
     setTimeout(() => dismissCompanionPopup(id), 5000);
   };
 
+  // Closes the achievement popup and clears currentAchievement so the queue-
+  // drain useEffect can immediately pick up the next item (if any).
+  const dismissAchievementPopup = () => {
+    setShowAchievementPopup(false);
+    // Delay clearing the current item until after AnimatePresence exit (~350 ms)
+    // so the exit animation isn't cut short.
+    setTimeout(() => setCurrentAchievement(null), 400);
+  };
+
   useEffect(() => {
     loadPet();
     loadMemories();
-    loadStreak();
     loadHistory(30);
   }, []);
 
@@ -515,9 +648,11 @@ export default function Home() {
       setWorld(res.data.world);
       setMessage(res.data.message);
       checkGoalCompletion(action);
+      // Re-fetching history alone is sufficient to keep every derived metric
+      // in sync — Carbon Impact AND Streak both read from historyActions,
+      // so there is no separate streak refresh to run here anymore.
       await Promise.all([
         loadHistory(historyDays),
-        loadStreak(),
         loadPet(),
       ]);
       pushCompanionPopup(action);
@@ -867,28 +1002,33 @@ export default function Home() {
   const totalCount = achievements.length;
   const progressPercentage = totalCount > 0 ? (unlockedCount / totalCount) * 100 : 0;
 
+  // Stage 1 — enqueue any newly-unlocked achievements that haven't been shown yet.
+  // We only touch shownAchievements here (add IDs immediately so that rapid
+  // re-renders of `achievements` don't double-enqueue the same badge).
   useEffect(() => {
-    const newlyUnlocked = achievements.find(
-      (a) =>
-        a.unlocked &&
-        !shownAchievements.includes(a.id)
+    const newlyUnlocked = achievements.filter(
+      (a) => a.unlocked && !shownAchievements.includes(a.id)
     );
 
-    if (newlyUnlocked) {
-      setNewAchievement(newlyUnlocked);
+    if (newlyUnlocked.length === 0) return;
 
-      setShowAchievementPopup(true);
-
-      setShownAchievements((prev) => [
-        ...prev,
-        newlyUnlocked.id,
-      ]);
-
-      setTimeout(() => {
-        setShowAchievementPopup(false);
-      }, 5000);
-    }
+    setShownAchievements((prev) => [...prev, ...newlyUnlocked.map((a) => a.id)]);
+    setAchievementQueue((prev) => [...prev, ...newlyUnlocked]);
   }, [achievements]);
+
+  // Stage 2 — drain the queue one entry at a time.  We only start the next
+  // popup once the current one has fully exited (showAchievementPopup === false
+  // AND currentAchievement has been cleared), which prevents two modals
+  // stacking on top of each other.
+  useEffect(() => {
+    if (showAchievementPopup || currentAchievement) return; // one showing already
+    if (achievementQueue.length === 0) return;
+
+    const [next, ...rest] = achievementQueue;
+    setAchievementQueue(rest);
+    setCurrentAchievement(next);
+    setShowAchievementPopup(true);
+  }, [achievementQueue, showAchievementPopup, currentAchievement]);
 
   // Variants typed securely using Framer Motion's exported type interface to protect layout rendering compilation
   const containerVariants: Variants = {
@@ -937,21 +1077,51 @@ export default function Home() {
   const sustainabilityScore = Math.round((world.forest + world.river + world.air + world.wildlife) / 4);
   const evoProgress = getEvolutionProgress();
 
+  // Evolution Milestones — how far the connecting timeline should fill,
+  // accounting for both completed stages and in-progress percentage toward
+  // the next one (4 stages = 3 gaps between nodes).
+  const evolutionStageCount = EVOLUTION_STAGES.length;
+  const timelineFillPercent = pet
+    ? Math.min(
+        100,
+        Math.max(
+          0,
+          (((pet.level - 1) + evoProgress.percentage / 100) /
+            (evolutionStageCount - 1)) *
+            100
+        )
+      )
+    : 0;
+
   const currentStreak = streak?.current_streak ?? 0;
   const longestStreak = streak?.longest_streak ?? 0;
   const nextMilestone = getNextMilestone(currentStreak);
   const milestoneProgress = Math.min(100, Math.round((currentStreak / nextMilestone) * 100));
 
   // Last 7 days for the streak calendar — "today" is the rightmost circle.
-  // A day counts as completed if it falls within the current streak's run,
-  // looking backward from today.
+  //
+  // BUG FIX: this used to mark a day "completed" via `offset < currentStreak`
+  // — i.e. it just lit up the most recent N circles, where N is the
+  // *aggregate* streak count. That assumes the streak is always an unbroken
+  // run ending today, which silently highlights the wrong days the moment
+  // there's a gap (e.g. actions logged Wed+Thu but not today: currentStreak
+  // is correctly 2, but this formula would highlight "today" and
+  // "yesterday" instead of the Wed/Thu that actually happened — exactly the
+  // mismatch against Weekly Carbon Impact that was reported).
+  //
+  // Fixed: each day now looks itself up in activeDayKeys, the same per-day
+  // active-day dataset (built from historyActions) that both
+  // computeStreakFromHistory and Weekly Carbon Impact's day-by-day
+  // breakdown are grounded in. So "completed" here means exactly the same
+  // thing it means everywhere else: at least one eco action was logged on
+  // that calendar date.
   const weekdayLabels = ["S", "M", "T", "W", "T", "F", "S"];
   const streakCalendarDays = [...Array(7)].map((_, i) => {
     const offset = 6 - i; // i=0 -> 6 days ago, i=6 -> today
-    const date = new Date();
+    const date = new Date(startOfToday);
     date.setDate(date.getDate() - offset);
     const isToday = offset === 0;
-    const completed = offset < currentStreak;
+    const completed = activeDayKeys.has(getLocalDayKey(date));
     return {
       label: weekdayLabels[date.getDay()],
       completed,
@@ -1021,7 +1191,7 @@ export default function Home() {
                   🔥
                 </motion.span>
                 <span className="text-sm font-black text-orange-600 dark:text-orange-400 leading-none">
-                  {streakLoading && !streak ? "–" : currentStreak}
+                  {historyLoading && historyActions.length === 0 ? "–" : currentStreak}
                 </span>
               </motion.button>
 
@@ -1077,6 +1247,38 @@ export default function Home() {
               >
                 🎯
               </motion.button>
+
+              {/* Energy */}
+
+              <div
+
+                className="relative flex items-center gap-1.5 bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-amber-500/10 dark:to-yellow-500/10 border border-amber-200/70 dark:border-amber-500/20 rounded-xl px-2.5 py-1.5 shadow-sm"
+
+                title="Energy"
+
+              >
+
+                <motion.div
+
+                  animate={{ scale: [1, 1.15, 1] }}
+
+                  transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+
+                  className="flex items-center justify-center"
+
+                >
+
+                  <Zap className="w-4 h-4 text-amber-500 fill-amber-400" />
+
+                </motion.div>
+
+                <span className="text-sm font-black text-amber-600 dark:text-amber-400 leading-none tabular-nums">
+
+                  {pet.energy}
+
+                </span>
+
+              </div>
             </div>
 
             <div className="hidden md:flex items-center gap-2 text-sm text-slate-500 dark:text-zinc-400 font-medium">
@@ -1302,6 +1504,163 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Evolution Milestones — Horizontal Journey Timeline */}
+        <div className="bg-white dark:bg-zinc-900 border border-slate-200/60 dark:border-zinc-800/80 shadow-sm rounded-3xl p-6 md:p-8 relative overflow-hidden transition-all duration-300">
+          {/* Ambient glows, consistent with hero card styling */}
+          <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-emerald-300/15 dark:bg-emerald-500/5 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-16 -left-16 w-48 h-48 rounded-full bg-teal-300/10 dark:bg-teal-500/5 blur-3xl pointer-events-none" />
+
+          <div className="relative z-10">
+            {/* Header row: title + next-stage progress indicator */}
+            <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5 mb-8">
+              <div>
+                <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-500 bg-emerald-500/10 px-3 py-1 rounded-full inline-flex items-center gap-1.5 mb-2.5">
+                  <Sparkles className="w-3 h-3" />
+                  Evolution Journey
+                </span>
+                <h2 className="text-2xl font-extrabold text-slate-900 dark:text-white">
+                  Evolution Milestones
+                </h2>
+                <p className="text-slate-500 dark:text-zinc-400 text-sm mt-1 max-w-md">
+                  Increase Sprout's level through carbon positive actions to unlock badges.
+                </p>
+              </div>
+
+              {/* Progress to next stage */}
+              <div className="w-full lg:w-72 flex-shrink-0">
+                <div className="flex justify-between items-center text-xs font-medium text-slate-500 dark:text-zinc-400 mb-1.5">
+                  <span>
+                    {evoProgress.nextLevel === "Max Level Reached"
+                      ? "Max evolution reached"
+                      : `Next: ${evoProgress.nextLevel}`}
+                  </span>
+                  <span className="font-bold text-slate-700 dark:text-zinc-300">
+                    {Math.round(evoProgress.percentage)}%
+                  </span>
+                </div>
+                <div className="h-2.5 w-full bg-slate-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                  <motion.div
+                    role="progressbar"
+                    aria-label="Evolution progress towards next stage"
+                    aria-valuenow={Math.round(evoProgress.percentage)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${evoProgress.percentage}%` }}
+                    transition={{ duration: 1, ease: "easeOut" }}
+                    className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full relative"
+                  >
+                    <div className="absolute inset-0 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.3)_50%,transparent_100%)] animate-[shine_2.5s_infinite] bg-[length:200%_100%]" />
+                  </motion.div>
+                </div>
+                <div className="text-[11px] text-slate-400 dark:text-zinc-500 mt-1.5 text-right">
+                  {evoProgress.current} / {evoProgress.target} XP
+                </div>
+              </div>
+            </div>
+
+            {/* Horizontal timeline (stacks vertically on mobile) */}
+            <div className="relative">
+              {/* Connecting line track — only meaningful once nodes are laid out horizontally */}
+              <div className="hidden sm:block absolute top-7 left-[12.5%] right-[12.5%] h-1 bg-slate-100 dark:bg-zinc-800 rounded-full" />
+              <motion.div
+                className="hidden sm:block absolute top-7 left-[12.5%] h-1 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-400 rounded-full"
+                initial={{ width: 0 }}
+                animate={{ width: `${(timelineFillPercent / 100) * 75}%` }}
+                transition={{ duration: 1.2, ease: "easeOut" }}
+              />
+
+              <div
+                className="grid grid-cols-1 sm:grid-cols-4 gap-5 sm:gap-4 relative"
+                role="list"
+                aria-label="Evolution milestones"
+              >
+                {EVOLUTION_STAGES.map((stage) => {
+                  const status =
+                    pet.level > stage.level
+                      ? "unlocked"
+                      : pet.level === stage.level
+                      ? "current"
+                      : "locked";
+
+                  return (
+                    <motion.div
+                      key={stage.level}
+                      whileHover={{ y: -3 }}
+                      className="flex sm:flex-col items-center sm:items-center gap-4 sm:gap-0 text-left sm:text-center relative z-10 rounded-2xl sm:p-2 transition-all duration-300 hover:bg-slate-50/70 dark:hover:bg-zinc-800/30"
+                    >
+                      {/* Badge node */}
+                      <motion.div
+                        animate={
+                          status === "current"
+                            ? { scale: [1, 1.06, 1] }
+                            : { scale: 1 }
+                        }
+                        transition={
+                          status === "current"
+                            ? { duration: 2.2, repeat: Infinity, ease: "easeInOut" }
+                            : { duration: 0.2 }
+                        }
+                        className={`h-14 w-14 flex-shrink-0 rounded-2xl flex items-center justify-center text-2xl relative shadow-md border transition-all duration-300 ${
+                          status === "unlocked"
+                            ? `bg-gradient-to-br ${stage.gradient} ${stage.border} ${stage.text}`
+                            : status === "current"
+                            ? `bg-gradient-to-br ${stage.gradient} ${stage.border} ${stage.text} shadow-lg ${stage.glow} ring-4 ${stage.ring}`
+                            : "bg-slate-100 dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-300 dark:text-zinc-600 grayscale"
+                        }`}
+                      >
+                        {stage.emoji}
+
+                        {status === "unlocked" && (
+                          <div className={`absolute -bottom-1 -right-1 ${stage.solidBadge} text-white rounded-full p-0.5 border-2 border-white dark:border-zinc-900`}>
+                            <Check className="w-2.5 h-2.5" />
+                          </div>
+                        )}
+                        {status === "current" && (
+                          <motion.div
+                            animate={{ scale: [1, 1.2, 1] }}
+                            transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+                            className="absolute -bottom-1 -right-1 bg-amber-400 text-white rounded-full p-0.5 border-2 border-white dark:border-zinc-900"
+                          >
+                            <Target className="w-2.5 h-2.5" />
+                          </motion.div>
+                        )}
+                        {status === "locked" && (
+                          <div className="absolute -bottom-1 -right-1 bg-slate-300 dark:bg-zinc-700 text-slate-500 dark:text-zinc-400 rounded-full p-0.5 border-2 border-white dark:border-zinc-900">
+                            <Lock className="w-2.5 h-2.5" />
+                          </div>
+                        )}
+                      </motion.div>
+
+                      {/* Label */}
+                      <div className="sm:mt-3 min-w-0">
+                        <h4 className={`font-bold text-sm ${status === "locked" ? "text-slate-400 dark:text-zinc-500" : "text-slate-800 dark:text-zinc-200"}`}>
+                          {stage.title}
+                        </h4>
+                        <p
+                          className={`text-[11px] font-semibold mt-0.5 ${
+                            status === "unlocked"
+                              ? stage.label
+                              : status === "current"
+                              ? "text-amber-600 dark:text-amber-400"
+                              : "text-slate-400 dark:text-zinc-500"
+                          }`}
+                        >
+                          {status === "unlocked"
+                            ? `Unlocked · Lvl ${stage.level}`
+                            : status === "current"
+                            ? `You are here · Lvl ${stage.level}`
+                            : `Unlocks at Lvl ${stage.level}`}
+                        </p>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
           {/* Public Transport */}
           <motion.div
@@ -1329,6 +1688,7 @@ export default function Home() {
               </div>
 
               <button
+                aria-label="Log Public Transport Action"
                 disabled={isActionLoading !== null}
                 onClick={() => performAction("public_transport")}
                 className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold"
@@ -1366,6 +1726,7 @@ export default function Home() {
               </div>
 
               <button
+                aria-label="Log Walk or Cycle Action"
                 disabled={isActionLoading !== null}
                 onClick={() => performAction("walk_cycle")}
                 className="px-3.5 py-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-xs font-bold"
@@ -1403,6 +1764,7 @@ export default function Home() {
               </div>
 
               <button
+                aria-label="Log Recycle Action"
                 disabled={isActionLoading !== null}
                 onClick={() => performAction("recycle")}
                 className="px-3.5 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-lg text-xs font-bold"
@@ -1440,6 +1802,7 @@ export default function Home() {
               </div>
 
               <button
+                aria-label="Log Save Electricity Action"
                 disabled={isActionLoading !== null}
                 onClick={() => performAction("save_energy")}
                 className="px-3.5 py-1.5 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg text-xs font-bold"
@@ -1477,6 +1840,7 @@ export default function Home() {
               </div>
 
               <button
+                aria-label="Log Reusable Products Action"
                 disabled={isActionLoading !== null}
                 onClick={() => performAction("reusable")}
                 className="px-3.5 py-1.5 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg text-xs font-bold"
@@ -1514,6 +1878,7 @@ export default function Home() {
               </div>
 
               <button
+                aria-label="Log Plant Based Meal Action"
                 disabled={isActionLoading !== null}
                 onClick={() => performAction("plant_based")}
                 className="px-3.5 py-1.5 bg-lime-500 hover:bg-lime-600 text-white rounded-lg text-xs font-bold"
@@ -1613,6 +1978,7 @@ export default function Home() {
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <input
+                    aria-label="Climate Goal"
                     type="text"
                     value={memory}
                     onChange={(e) => setMemory(e.target.value)}
@@ -1624,6 +1990,7 @@ export default function Home() {
                   />
                 </div>
                 <button
+                  aria-label="Add Climate Goal"
                   disabled={isGoalsLoading || !memory.trim()}
                   onClick={saveMemory}
                   className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-100 dark:disabled:bg-zinc-800 disabled:text-slate-400 text-white rounded-xl text-sm font-bold transition flex items-center gap-1 cursor-pointer"
@@ -1780,10 +2147,15 @@ export default function Home() {
 
                         </div>
 
-                        {/* Progress Bar */}
                         <div className="mt-3 w-full h-2 bg-slate-200 dark:bg-zinc-700 rounded-full overflow-hidden">
-
                           <motion.div
+                            role="progressbar"
+                            aria-label={`${ach.title} achievement progress`}
+                            aria-valuenow={Math.round(
+                              Math.min(ach.current / ach.target, 1) * 100
+                            )}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
                             initial={{ width: 0 }}
                             animate={{
                               width: `${
@@ -1831,110 +2203,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Middle Section: Achievements Milestones */}
-        <div className="space-y-4">
-          <div>
-            <h2 className="text-2xl font-extrabold text-slate-900 dark:text-white">Evolution Milestones</h2>
-            <p className="text-slate-500 dark:text-zinc-400 text-sm">Increase Sprout's level through carbon positive actions to unlock badges.</p>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            
-            {/* Lvl 1 Badge */}
-            <div className={`border rounded-2xl p-5 flex items-center gap-4 transition-all duration-300 bg-white dark:bg-zinc-900 border-slate-200/60 dark:border-zinc-800/80`}>
-              <div className="h-12 w-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 flex items-center justify-center text-2xl relative shadow-md">
-                🌱
-                <div className="absolute -bottom-1 -right-1 bg-emerald-500 text-white rounded-full p-0.5 border-2 border-white dark:border-zinc-900">
-                  <Check className="w-2.5 h-2.5 font-bold" />
-                </div>
-              </div>
-              <div>
-                <h4 className="font-bold text-slate-800 dark:text-zinc-200 text-sm">Sprout Initiator</h4>
-                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">Unlocked (Lvl 1)</p>
-              </div>
-            </div>
-
-            {/* Lvl 2 Badge */}
-            <div className={`border rounded-2xl p-5 flex items-center gap-4 transition-all duration-300 ${
-              pet.level >= 2 
-                ? "bg-white dark:bg-zinc-900 border-slate-200/60 dark:border-zinc-800/80" 
-                : "bg-slate-100/50 dark:bg-zinc-900/40 border-slate-100 dark:border-zinc-900/60 opacity-60"
-            }`}>
-              <div className={`h-12 w-12 rounded-xl text-2xl flex items-center justify-center relative shadow-sm ${
-                pet.level >= 2 
-                  ? "bg-teal-500/10 border border-teal-500/20 text-teal-500" 
-                  : "bg-slate-200 dark:bg-zinc-800 text-slate-400 border border-slate-300 dark:border-zinc-700"
-              }`}>
-                🌿
-                {pet.level >= 2 && (
-                  <div className="absolute -bottom-1 -right-1 bg-teal-500 text-white rounded-full p-0.5 border-2 border-white dark:border-zinc-900">
-                    <Check className="w-2.5 h-2.5 font-bold" />
-                  </div>
-                )}
-              </div>
-              <div>
-                <h4 className="font-bold text-slate-800 dark:text-zinc-200 text-sm">Canopy Protector</h4>
-                <p className={`text-[11px] font-semibold ${pet.level >= 2 ? "text-teal-600 dark:text-teal-400" : "text-slate-400"}`}>
-                  {pet.level >= 2 ? "Unlocked (Lvl 2)" : "Unlocks at Lvl 2"}
-                </p>
-              </div>
-            </div>
-
-            {/* Lvl 3 Badge */}
-            <div className={`border rounded-2xl p-5 flex items-center gap-4 transition-all duration-300 ${
-              pet.level >= 3 
-                ? "bg-white dark:bg-zinc-900 border-slate-200/60 dark:border-zinc-800/80" 
-                : "bg-slate-100/50 dark:bg-zinc-900/40 border-slate-100 dark:border-zinc-900/60 opacity-60"
-            }`}>
-              <div className={`h-12 w-12 rounded-xl text-2xl flex items-center justify-center relative shadow-sm ${
-                pet.level >= 3 
-                  ? "bg-amber-500/10 border border-amber-500/20 text-amber-500" 
-                  : "bg-slate-200 dark:bg-zinc-800 text-slate-400 border border-slate-300 dark:border-zinc-700"
-              }`}>
-                🪴
-                {pet.level >= 3 && (
-                  <div className="absolute -bottom-1 -right-1 bg-amber-500 text-white rounded-full p-0.5 border-2 border-white dark:border-zinc-900">
-                    <Check className="w-2.5 h-2.5 font-bold" />
-                  </div>
-                )}
-              </div>
-              <div>
-                <h4 className="font-bold text-slate-800 dark:text-zinc-200 text-sm">Habitat Weaver</h4>
-                <p className={`text-[11px] font-semibold ${pet.level >= 3 ? "text-amber-600 dark:text-amber-400" : "text-slate-400"}`}>
-                  {pet.level >= 3 ? "Unlocked (Lvl 3)" : "Unlocks at Lvl 3"}
-                </p>
-              </div>
-            </div>
-
-            {/* Lvl 4 Badge */}
-            <div className={`border rounded-2xl p-5 flex items-center gap-4 transition-all duration-300 ${
-              pet.level >= 4 
-                ? "bg-white dark:bg-zinc-900 border-slate-200/60 dark:border-zinc-800/80" 
-                : "bg-slate-100/50 dark:bg-zinc-900/40 border-slate-100 dark:border-zinc-900/60 opacity-60"
-            }`}>
-              <div className={`h-12 w-12 rounded-xl text-2xl flex items-center justify-center relative shadow-sm ${
-                pet.level >= 4 
-                  ? "bg-violet-500/10 border border-violet-500/20 text-violet-500" 
-                  : "bg-slate-200 dark:bg-zinc-800 text-slate-400 border border-slate-300 dark:border-zinc-700"
-              }`}>
-                🌳
-                {pet.level >= 4 && (
-                  <div className="absolute -bottom-1 -right-1 bg-violet-500 text-white rounded-full p-0.5 border-2 border-white dark:border-zinc-900">
-                    <Check className="w-2.5 h-2.5 font-bold" />
-                  </div>
-                )}
-              </div>
-              <div>
-                <h4 className="font-bold text-slate-800 dark:text-zinc-200 text-sm">Planet Guardian</h4>
-                <p className={`text-[11px] font-semibold ${pet.level >= 4 ? "text-violet-600 dark:text-violet-400" : "text-slate-400"}`}>
-                  {pet.level >= 4 ? "Unlocked (Lvl 4)" : "Unlocks at Lvl 4"}
-                </p>
-              </div>
-            </div>
-
-          </div>
-        </div>
-
         {/* Row 2: Eco Diary & Carbon Impact */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           
@@ -1978,6 +2246,7 @@ export default function Home() {
 
             <div className="pt-6 border-t border-slate-50 dark:border-zinc-800/60 mt-6 flex justify-end">
               <button
+                aria-label="Generate Eco Diary Entry"
                 disabled={isDiaryLoading}
                 onClick={loadDiary}
                 className="px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 disabled:from-emerald-500/60 disabled:to-teal-500/60 text-white rounded-xl text-sm font-bold transition flex items-center gap-2 cursor-pointer shadow-md shadow-emerald-500/10"
@@ -2288,6 +2557,189 @@ export default function Home() {
                     className="mt-5 w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white font-bold py-2.5 rounded-xl shadow-lg transition text-sm"
                   >
                     Continue Journey →
+                  </motion.button>
+
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* ── Achievement Unlocked Popup ───────────────────────────────────────
+          Same design language as the level-up modal above. Uses a queue so
+          multiple simultaneous unlocks display sequentially, never on top of
+          each other. Auto-dismisses after 5 s; also has a manual close button.
+      ────────────────────────────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {showAchievementPopup && currentAchievement && (
+          <>
+            {/* Lightweight confetti — fewer pieces than level-up so it feels
+                distinct and slightly less dramatic, matching the hierarchy. */}
+            <Confetti
+              recycle={false}
+              numberOfPieces={120}
+              gravity={0.22}
+              colors={["#f59e0b", "#10b981", "#6366f1", "#f43f5e", "#facc15"]}
+            />
+
+            {/* Backdrop — same opacity/blur as level-up */}
+            <motion.div
+              key="achievement-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22 }}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[998]"
+              onClick={dismissAchievementPopup}
+            />
+
+            {/* Modal card */}
+            <motion.div
+              key="achievement-modal"
+              initial={{ scale: 0.72, opacity: 0, y: 24 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.82, opacity: 0, y: 16 }}
+              transition={{ type: "spring", stiffness: 200, damping: 20 }}
+              className="fixed inset-0 flex items-center justify-center z-[999] px-4"
+            >
+              <div className="relative overflow-hidden w-full max-w-[320px] rounded-[24px] bg-white dark:bg-zinc-900 border border-amber-200 dark:border-amber-900/60 shadow-[0_10px_40px_rgba(245,158,11,0.22)]">
+
+                {/* Ambient gradient background */}
+                <div className="absolute inset-0 bg-gradient-to-br from-amber-50 via-white to-yellow-50 dark:from-zinc-900 dark:via-zinc-900 dark:to-amber-950/20 pointer-events-none" />
+
+                {/* Top accent stripe — amber to distinguish from green level-up */}
+                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-400" />
+
+                {/* Subtle radial glow behind the badge */}
+                <div className="absolute top-8 left-1/2 -translate-x-1/2 w-32 h-32 rounded-full bg-amber-300/20 dark:bg-amber-500/10 blur-2xl pointer-events-none" />
+
+                {/* Close button */}
+                <button
+                  type="button"
+                  aria-label="Dismiss achievement"
+                  onClick={dismissAchievementPopup}
+                  className="absolute top-3 right-3 z-10 h-7 w-7 rounded-full bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 flex items-center justify-center text-slate-400 dark:text-zinc-500 transition-colors cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+
+                <div className="relative p-5 text-center">
+
+                  {/* "Achievement Unlocked" pill — mirrors the "✨ Level Up" pill */}
+                  <motion.div
+                    initial={{ y: -10, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.08 }}
+                    className="mb-4"
+                  >
+                    <div className="inline-flex items-center gap-1.5 bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider">
+                      <Award className="w-3 h-3" />
+                      Achievement Unlocked
+                    </div>
+                  </motion.div>
+
+                  {/* Badge orb — floats + wobbles like the level-up badge */}
+                  <motion.div
+                    animate={{ y: [0, -6, 0] }}
+                    transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
+                    className="relative mx-auto mb-4"
+                  >
+                    {/* Glow ring */}
+                    <div className="absolute inset-0 w-20 h-20 mx-auto rounded-full bg-amber-400/30 blur-2xl" />
+
+                    {/* Orb */}
+                    <motion.div
+                      animate={{ rotate: [0, -4, 4, -4, 0] }}
+                      transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+                      className="relative w-20 h-20 mx-auto rounded-full bg-gradient-to-br from-amber-400 to-yellow-500 dark:from-amber-500 dark:to-yellow-600 flex items-center justify-center border-2 border-white dark:border-zinc-800 shadow-lg shadow-amber-500/30 text-4xl"
+                    >
+                      {currentAchievement.icon}
+                    </motion.div>
+
+                    {/* Sparkle ring of dots */}
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
+                      className="absolute inset-0 w-20 h-20 mx-auto"
+                    >
+                      {[0, 60, 120, 180, 240, 300].map((deg) => (
+                        <div
+                          key={deg}
+                          className="absolute w-1.5 h-1.5 rounded-full bg-amber-300"
+                          style={{
+                            top: "50%",
+                            left: "50%",
+                            transform: `rotate(${deg}deg) translateY(-36px) translate(-50%, -50%)`,
+                          }}
+                        />
+                      ))}
+                    </motion.div>
+                  </motion.div>
+
+                  {/* Title */}
+                  <motion.h2
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.14 }}
+                    className="text-2xl font-black text-slate-900 dark:text-white leading-tight"
+                  >
+                    {currentAchievement.title}
+                  </motion.h2>
+
+                  {/* Description */}
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.2 }}
+                    className="text-xs text-slate-500 dark:text-zinc-400 mt-1.5 px-3 leading-relaxed"
+                  >
+                    {currentAchievement.desc}
+                  </motion.p>
+
+                  {/* Info card — mirrors the "New Evolution" card in level-up */}
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: 0.26, type: "spring", stiffness: 260, damping: 22 }}
+                    className="mt-4 rounded-2xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 p-3"
+                  >
+                    <div className="text-[10px] uppercase tracking-widest text-slate-400 dark:text-zinc-500 mb-0.5">
+                      Badge Earned
+                    </div>
+                    <div className="text-base font-black text-amber-600 dark:text-amber-400">
+                      {currentAchievement.title}
+                    </div>
+                  </motion.div>
+
+                  {/* Auto-dismiss progress bar */}
+                  <div className="mt-3 h-1 w-full rounded-full bg-slate-100 dark:bg-zinc-800 overflow-hidden">
+                    <motion.div
+                      initial={{ width: "100%" }}
+                      animate={{ width: "0%" }}
+                      transition={{ duration: 5, ease: "linear" }}
+                      onAnimationComplete={dismissAchievementPopup}
+                      className="h-full bg-gradient-to-r from-amber-400 to-yellow-400 rounded-full"
+                    />
+                  </div>
+
+                  {/* Decorative emoji row — mirrors "🌱 ✨ 🌳 ✨ 🌱" */}
+                  <motion.div
+                    animate={{ scale: [1, 1.05, 1] }}
+                    transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                    className="mt-3 text-xl"
+                  >
+                    🌿 ✨ 🏆 ✨ 🌿
+                  </motion.div>
+
+                  {/* CTA button */}
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.97 }}
+                    onClick={dismissAchievementPopup}
+                    className="mt-4 w-full bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white font-bold py-2.5 rounded-xl shadow-lg shadow-amber-500/20 transition text-sm"
+                  >
+                    Keep Going →
                   </motion.button>
 
                 </div>
