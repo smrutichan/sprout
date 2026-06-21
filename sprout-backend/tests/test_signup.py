@@ -17,8 +17,10 @@ def test_pet():
     response = client.get("/pet")
     assert response.status_code == 200
     data = response.json()
+    assert "name" in data
+    assert "energy" in data
+    assert "happiness" in data
     assert "level" in data
-    assert "xp" in data
 
 def test_world():
     response = client.get("/world")
