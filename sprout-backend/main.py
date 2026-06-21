@@ -98,6 +98,9 @@ def signup(user: UserCreate):
     if existing_user:
         return {"error":"Email already exists"}
 
+    if len(user.password) < 8:
+        return {"error":"Password must be at least 8 characters"}
+
     create_user(
         user.name,
         user.email,
