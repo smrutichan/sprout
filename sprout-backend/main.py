@@ -98,6 +98,9 @@ def signup(user: UserCreate):
     if existing_user:
         return {"error":"Email already exists"}
 
+    if "@" not in user.email:
+        return {"error": "Invalid email"}
+
     if len(user.password) < 8:
         return {"error":"Password must be at least 8 characters"}
 
@@ -125,7 +128,7 @@ def login(user: UserLogin):
         )
         return {"token":token}
 
-    return {"error":"Invalid credentials"}
+    return {"error": "Invalid email or password"}
 
 @app.post("/memory")
 def add_memory(text: str):
