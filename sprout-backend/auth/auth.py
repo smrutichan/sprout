@@ -3,10 +3,14 @@ from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import os
+from passlib.context import CryptContext
 
 security = HTTPBearer()
 
-SECRET_KEY = "sprout-secret-key"
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY environment variable not set")
 ALGORITHM = "HS256"
 
 pwd_context = CryptContext(schemes=["bcrypt"],deprecated="auto")
