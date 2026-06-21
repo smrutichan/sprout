@@ -8,9 +8,7 @@ from passlib.context import CryptContext
 
 security = HTTPBearer()
 
-SECRET_KEY = os.getenv("SECRET_KEY")
-if not SECRET_KEY:
-    raise ValueError("SECRET_KEY environment variable not set")
+SECRET_KEY = "sprout-secret-key"
 ALGORITHM = "HS256"
 
 pwd_context = CryptContext(schemes=["bcrypt"],deprecated="auto")
